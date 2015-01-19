@@ -141,9 +141,8 @@ module ActiveShipping
       rate_request = build_rate_request(origin, destination, packages, options)
 
       xml = commit(save_request(rate_request), (options[:test] || false))
-      response = remove_version_prefix(xml)
 
-      parse_rate_response(origin, destination, packages, response, options)
+      parse_rate_response(origin, destination, packages, xml, options)
     end
 
     def find_tracking_info(tracking_number, options = {})
@@ -151,8 +150,7 @@ module ActiveShipping
 
       tracking_request = build_tracking_request(tracking_number, options)
       xml = commit(save_request(tracking_request), (options[:test] || false))
-      response = remove_version_prefix(xml)
-      parse_tracking_response(response, options)
+      parse_tracking_response(xml, options)
     end
 
     protected
@@ -339,36 +337,31 @@ module ActiveShipping
     end
 
     def parse_rate_response(origin, destination, packages, response, options)
-      rate_estimates = []
-
-      xml = build_document(response)
-      root_node = xml.elements['RateReply']
+      xml = build_document(response, 'RateReply')
 
       success = response_success?(xml)
       message = response_message(xml)
 
-      raise ActiveShipping::ResponseContentError.new(StandardError.new('Invalid document'), xml) unless root_node
-
-      root_node.elements.each('RateReplyDetails') do |rated_shipment|
-        service_code = rated_shipment.get_text('ServiceType').to_s
-        is_saturday_delivery = rated_shipment.get_text('AppliedOptions').to_s == 'SATURDAY_DELIVERY'
+      rate_estimates = xml.root.css('> RateReplyDetails').map do |rated_shipment|
+        service_code = rated_shipment.at('ServiceType').text
+        is_saturday_delivery = rated_shipment.at('AppliedOptions').try(:text) == 'SATURDAY_DELIVERY'
         service_type = is_saturday_delivery ? "#{service_code}_SATURDAY_DELIVERY" : service_code
 
-        transit_time = rated_shipment.get_text('TransitTime').to_s if service_code == "FEDEX_GROUND"
-        max_transit_time = rated_shipment.get_text('MaximumTransitTime').to_s if service_code == "FEDEX_GROUND"
+        transit_time = rated_shipment.at('TransitTime').text if service_code == "FEDEX_GROUND"
+        max_transit_time = rated_shipment.at('MaximumTransitTime').try(:text) if service_code == "FEDEX_GROUND"
 
-        delivery_timestamp = rated_shipment.get_text('DeliveryTimestamp').to_s
+        delivery_timestamp = rated_shipment.at('DeliveryTimestamp').try(:text)
 
         delivery_range = delivery_range_from(transit_time, max_transit_time, delivery_timestamp, options)
 
-        currency = rated_shipment.get_text('RatedShipmentDetails/ShipmentRateDetail/TotalNetCharge/Currency').to_s
-        rate_estimates << RateEstimate.new(origin, destination, @@name,
-                                           self.class.service_name_for_code(service_type),
-                                           :service_code => service_code,
-                                           :total_price => rated_shipment.get_text('RatedShipmentDetails/ShipmentRateDetail/TotalNetCharge/Amount').to_s.to_f,
-                                           :currency => currency,
-                                           :packages => packages,
-                                           :delivery_range => delivery_range)
+        currency = rated_shipment.at('RatedShipmentDetails/ShipmentRateDetail/TotalNetCharge/Currency').text
+        RateEstimate.new(origin, destination, @@name,
+             self.class.service_name_for_code(service_type),
+             :service_code => service_code,
+             :total_price => rated_shipment.at('RatedShipmentDetails/ShipmentRateDetail/TotalNetCharge/Amount').text.to_f,
+             :currency => currency,
+             :packages => packages,
+             :delivery_range => delivery_range)
       end
 
       if rate_estimates.empty?
@@ -408,8 +401,7 @@ module ActiveShipping
     end
 
     def parse_tracking_response(response, options)
-      xml = build_document(response)
-      root_node = xml.elements['TrackReply']
+      xml = build_document(response, 'TrackReply')
 
       success = response_success?(xml)
       message = response_message(xml)
@@ -419,23 +411,22 @@ module ActiveShipping
         delivery_signature = nil
         shipment_events = []
 
-        tracking_details = root_node.elements['TrackDetails']
-        tracking_number = tracking_details.get_text('TrackingNumber').to_s
-        status_code = tracking_details.get_text('StatusCode').to_s
-        status_description = tracking_details.get_text('StatusDescription').to_s
+        tracking_details = xml.root.at('TrackDetails')
+
+        tracking_number = tracking_details.at('TrackingNumber').text
+        status_code = tracking_details.at('StatusCode').text
+        status_description = tracking_details.at('StatusDescription').text
         status = TRACKING_STATUS_CODES[status_code]
 
-        if status_code == 'DL' && tracking_details.get_text('SignatureProofOfDeliveryAvailable').to_s == 'true'
-          delivery_signature = tracking_details.get_text('DeliverySignatureName').to_s
+        if status_code == 'DL' && tracking_details.at('SignatureProofOfDeliveryAvailable').text == 'true'
+          delivery_signature = tracking_details.at('DeliverySignatureName').text
         end
 
-        origin_node = tracking_details.elements['OriginLocationAddress']
-
-        if origin_node
+        if origin_node = tracking_details.at('OriginLocationAddress')
           origin = Location.new(
-                :country =>     origin_node.get_text('CountryCode').to_s,
-                :province =>    origin_node.get_text('StateOrProvinceCode').to_s,
-                :city =>        origin_node.get_text('City').to_s
+                :country =>     origin_node.at('CountryCode').text,
+                :province =>    origin_node.at('StateOrProvinceCode').text,
+                :city =>        origin_node.at('City').text
           )
         end
 
@@ -446,19 +437,19 @@ module ActiveShipping
         actual_delivery_time = extract_timestamp(tracking_details, 'ActualDeliveryTimestamp')
         scheduled_delivery_time = extract_timestamp(tracking_details, 'EstimatedDeliveryTimestamp')
 
-        tracking_details.elements.each('Events') do |event|
-          address  = event.elements['Address']
+        tracking_details.xpath('Events').each do |event|
+          address  = event.at('Address')
+          next if address.nil? || address.at('CountryCode').nil?
 
-          city     = address.get_text('City').to_s
-          state    = address.get_text('StateOrProvinceCode').to_s
-          zip_code = address.get_text('PostalCode').to_s
-          country  = address.get_text('CountryCode').to_s
-          next if country.blank?
+          city     = address.at('City').try(:text)
+          state    = address.at('StateOrProvinceCode').try(:text)
+          zip_code = address.at('PostalCode').try(:text)
+          country  = address.at('CountryCode').try(:text)
 
           location = Location.new(:city => city, :state => state, :postal_code => zip_code, :country => country)
-          description = event.get_text('EventDescription').to_s
+          description = event.at('EventDescription').text
 
-          time          = Time.parse("#{event.get_text('Timestamp').to_s}")
+          time          = Time.parse(event.at('Timestamp').text)
           zoneless_time = time.utc
 
           shipment_events << ShipmentEvent.new(description, zoneless_time, location)
@@ -496,22 +487,17 @@ module ActiveShipping
       (Time.now + delay_in_hours.hours).to_date
     end
 
-    def response_status_node(document)
-      document.elements['/*/Notifications/']
-    end
-
     def response_success?(document)
-      response_node = response_status_node(document)
-      return false if response_node.nil?
-
-      %w(SUCCESS WARNING NOTE).include? response_node.get_text('Severity').to_s
+      highest_severity = document.root.at('HighestSeverity')
+      return false if highest_severity.nil?
+      %w(SUCCESS WARNING NOTE).include?(highest_severity.text)
     end
 
     def response_message(document)
-      response_node = response_status_node(document)
-      return "" if response_node.nil?
+      notifications = document.root.at('Notifications')
+      return "" if notifications.nil?
 
-      "#{response_node.get_text('Severity')} - #{response_node.get_text('Code')}: #{response_node.get_text('Message')}"
+      "#{notifications.at('Severity').text} - #{notifications.at('Code').text}: #{notifications.at('Message').text}"
     end
 
     def commit(request, test = false)
@@ -530,15 +516,15 @@ module ActiveShipping
     def extract_address(document, possible_node_names)
       node = nil
       possible_node_names.each do |name|
-        node ||= document.elements[name]
+        node = document.at(name)
         break if node
       end
 
-      args = if node && node.elements['CountryCode']
+      args = if node && node.at('CountryCode')
         {
-          :country => node.get_text('CountryCode').to_s,
-          :province => node.get_text('StateOrProvinceCode').to_s,
-          :city => node.get_text('City').to_s
+          :country => node.at('CountryCode').text,
+          :province => node.at('StateOrProvinceCode').text,
+          :city => node.at('City').text
         }
       else
         {
@@ -552,8 +538,8 @@ module ActiveShipping
     end
 
     def extract_timestamp(document, node_name)
-      if timestamp_node = document.elements[node_name]
-        Time.parse(timestamp_node.to_s).utc
+      if timestamp_node = document.at(node_name)
+        Time.parse(timestamp_node.text).utc
       end
     end
 
@@ -565,9 +551,13 @@ module ActiveShipping
       end
     end
 
-    def build_document(xml)
-      REXML::Document.new(xml)
-    rescue REXML::ParseException => e
+    def build_document(xml, expected_root_tag)
+      document = Nokogiri.XML(remove_version_prefix(xml)) { |config| config.strict }
+      if document.root.nil? || document.root.name != expected_root_tag
+        raise ActiveShipping::ResponseContentError.new(StandardError.new('Invalid document'), xml)
+      end
+      document
+    rescue Nokogiri::XML::SyntaxError => e
       raise ActiveShipping::ResponseContentError.new(e, xml)
     end
   end

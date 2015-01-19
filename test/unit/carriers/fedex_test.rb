@@ -324,12 +324,12 @@ class FedExTest < Minitest::Test
 
     @carrier.expects(:ship_timestamp).returns(Time.parse("2009-07-20T12:01:55-04:00").in_time_zone('US/Eastern'))
     @carrier.expects(:commit).with { |request, test_mode| Hash.from_xml(request) == Hash.from_xml(expected_request) && test_mode }.returns(mock_response)
-    exception = assert_raises ActiveShipping::ResponseContentError do
+    exception = assert_raises(ActiveShipping::ResponseContentError) do
       @carrier.find_rates( location_fixtures[:ottawa],
                            location_fixtures[:beverly_hills],
                            package_fixtures.values_at(:book, :wii), :test => true)
     end
-    message = "Invalid document \n\n<?xml version='1.0' encoding='UTF-8'?>\n<RandomElement xmlns:v6='http://fedex.com/ws/rate/v6' xmlns:xsi='http://www.w3.org/2001/XMLSchema-instance'>\n</RandomElement>\n"
+    message = "Invalid document \n\n#{mock_response}"
     assert_equal message, exception.message
   end
 
@@ -395,13 +395,13 @@ class FedExTest < Minitest::Test
 
     @carrier.expects(:commit).returns(mock_response)
 
-    assert_raises ActiveShipping::ResponseError do
-    @carrier.find_rates(
-        location_fixtures[:ottawa],
-        location_fixtures[:beverly_hills],
-        package_fixtures.values_at(:book, :wii),
-        :test => true
-      )
-    end
+    response = @carrier.find_rates(
+      location_fixtures[:ottawa],
+      location_fixtures[:beverly_hills],
+      package_fixtures.values_at(:book, :wii),
+      :test => true
+    )
+
+    assert response.success?
   end
 end
