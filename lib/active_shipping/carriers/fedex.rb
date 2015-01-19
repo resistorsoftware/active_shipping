@@ -1,8 +1,6 @@
-# FedEx module by Jimmy Baker
-# http://github.com/jimmyebaker
-
-require 'date'
+# FedEx module by Jimmy Baker (http://github.com/jimmyebaker)
 module ActiveShipping
+
   # :key is your developer API key
   # :password is your API password
   # :account is your FedEx account number
@@ -162,90 +160,97 @@ module ActiveShipping
     def build_rate_request(origin, destination, packages, options = {})
       imperial = %w(US LR MM).include?(origin.country_code(:alpha2))
 
-      xml_request = XmlNode.new('RateRequest', 'xmlns' => 'http://fedex.com/ws/rate/v13') do |root_node|
-        root_node << build_request_header
-        root_node << build_version_node
+      xml_builder = Nokogiri::XML::Builder.new do |xml|
+        xml.RateRequest(xmlns: 'http://fedex.com/ws/rate/v13') do
+          build_request_header(xml)
 
-        # Returns delivery dates
-        root_node << XmlNode.new('ReturnTransitAndCommit', true)
-        # Returns saturday delivery shipping options when available
-        root_node << XmlNode.new('VariableOptions', 'SATURDAY_DELIVERY')
-
-        root_node << XmlNode.new('RequestedShipment') do |rs|
-          rs << XmlNode.new('ShipTimestamp', ship_timestamp(options[:turn_around_time]))
-
-          freight = has_freight?(options)
-
-          unless freight
-            # fedex api wants this up here otherwise request returns an error
-            rs << XmlNode.new('DropoffType', options[:dropoff_type] || 'REGULAR_PICKUP')
-            rs << XmlNode.new('PackagingType', options[:packaging_type] || 'YOUR_PACKAGING')
+          # Version
+          xml.Version do
+            xml.ServiceId('crs')
+            xml.Major('13')
+            xml.Intermediate('0')
+            xml.Minor('0')
           end
 
-          rs << build_location_node('Shipper', (options[:shipper] || origin))
-          rs << build_location_node('Recipient', destination)
-          if options[:shipper] and options[:shipper] != origin
-            rs << build_location_node('Origin', origin)
-          end
+          # Returns delivery dates
+          xml.ReturnTransitAndCommit(true)
 
-          if freight
-            # build xml for freight rate requests
-            freight_options = options[:freight]
-            rs << build_shipping_charges_payment_node(freight_options)
-            rs << build_freight_shipment_detail_node(freight_options, packages, imperial)
-            rs << build_rate_request_types_node
-          else
-            # build xml for non-freight rate requests
-            rs << XmlNode.new('SmartPostDetail') do |spd|
-              spd << XmlNode.new('Indicia', options[:smart_post_indicia] || 'PARCEL_SELECT')
-              spd << XmlNode.new('HubId', options[:smart_post_hub_id] || 5902) # default to LA
+          # Returns saturday delivery shipping options when available
+          xml.VariableOptions('SATURDAY_DELIVERY')
+
+          xml.RequestedShipment do
+            xml.ShipTimestamp(ship_timestamp(options[:turn_around_time]).iso8601(0))
+
+            freight = has_freight?(options)
+
+            unless freight
+              # fedex api wants this up here otherwise request returns an error
+              xml.DropoffType(options[:dropoff_type] || 'REGULAR_PICKUP')
+              xml.PackagingType(options[:packaging_type] || 'YOUR_PACKAGING')
             end
 
-            rs << build_rate_request_types_node
-            rs << XmlNode.new('PackageCount', packages.size)
-            rs << build_packages_nodes(packages, imperial)
+            build_location_node(xml, 'Shipper', options[:shipper] || origin)
+            build_location_node(xml, 'Recipient', destination)
+            if options[:shipper] && options[:shipper] != origin
+              build_location_node(xml, 'Origin', origin)
+            end
 
+            if freight
+              freight_options = options[:freight]
+              build_shipping_charges_payment_node(xml, freight_options)
+              build_freight_shipment_detail_node(xml, freight_options, packages, imperial)
+              build_rate_request_types_node(xml)
+            else
+              xml.SmartPostDetail do
+                xml.Indicia(options[:smart_post_indicia] || 'PARCEL_SELECT')
+                xml.HubId(options[:smart_post_hub_id] || 5902) # default to LA
+              end
+
+              build_rate_request_types_node(xml)
+              xml.PackageCount(packages.size)
+              build_packages_nodes(xml, packages, imperial)
+            end
           end
         end
       end
-      xml_request.to_s
+      xml_builder.to_xml
     end
 
-    def build_packages_nodes(packages, imperial)
+    def build_packages_nodes(xml, packages, imperial)
       packages.map do |pkg|
-        XmlNode.new('RequestedPackageLineItems') do |rps|
-          rps << XmlNode.new('GroupPackageCount', 1)
-          rps << build_package_weight_node(pkg, imperial)
-          rps << build_package_dimensions_node(pkg, imperial)
+        xml.RequestedPackageLineItems do
+          xml.GroupPackageCount(1)
+          build_package_weight_node(xml, pkg, imperial)
+          build_package_dimensions_node(xml, pkg, imperial)
         end
       end
     end
 
-    def build_shipping_charges_payment_node(freight_options)
-      XmlNode.new('ShippingChargesPayment') do |shipping_charges_payment|
-        shipping_charges_payment << XmlNode.new('PaymentType', freight_options[:payment_type])
-        shipping_charges_payment << XmlNode.new('Payor') do |payor|
-          payor << XmlNode.new('ResponsibleParty') do |responsible_party|
+    def build_shipping_charges_payment_node(xml, freight_options)
+      xml.ShippingChargesPayment do
+        xml.PaymentType(freight_options[:payment_type])
+        xml.Payor do
+          xml.ResponsibleParty do
             # TODO: case of different freight account numbers?
-            responsible_party << XmlNode.new('AccountNumber', freight_options[:account])
+            xml.AccountNumber(freight_options[:account])
           end
         end
       end
     end
 
-    def build_freight_shipment_detail_node(freight_options, packages, imperial)
-      XmlNode.new('FreightShipmentDetail') do |freight_shipment_detail|
+    def build_freight_shipment_detail_node(xml, freight_options, packages, imperial)
+      xml.FreightShipmentDetail do
         # TODO: case of different freight account numbers?
-        freight_shipment_detail << XmlNode.new('FedExFreightAccountNumber', freight_options[:account])
-        freight_shipment_detail << build_location_node('FedExFreightBillingContactAndAddress', freight_options[:billing_location])
-        freight_shipment_detail << XmlNode.new('Role', freight_options[:role])
+        xml.FedExFreightAccountNumber(freight_options[:account])
+        build_location_node(xml, 'FedExFreightBillingContactAndAddress', freight_options[:billing_location])
+        xml.Role(freight_options[:role])
 
         packages.each do |pkg|
-          freight_shipment_detail << XmlNode.new('LineItems') do |line_items|
-            line_items << XmlNode.new('FreightClass', freight_options[:freight_class])
-            line_items << XmlNode.new('Packaging', freight_options[:packaging])
-            line_items << build_package_weight_node(pkg, imperial)
-            line_items << build_package_dimensions_node(pkg, imperial)
+          xml.LineItems do
+            xml.FreightClass(freight_options[:freight_class])
+            xml.Packaging(freight_options[:packaging])
+            build_package_weight_node(xml, pkg, imperial)
+            build_package_dimensions_node(xml, pkg, imperial)
           end
         end
       end
@@ -255,90 +260,80 @@ module ActiveShipping
       options[:freight] && options[:freight].present?
     end
 
-    def build_package_weight_node(pkg, imperial)
-      XmlNode.new('Weight') do |tw|
-        tw << XmlNode.new('Units', imperial ? 'LB' : 'KG')
-        tw << XmlNode.new('Value', [((imperial ? pkg.lbs : pkg.kgs).to_f * 1000).round / 1000.0, 0.1].max)
+    def build_package_weight_node(xml, pkg, imperial)
+      xml.Weight do
+        xml.Units(imperial ? 'LB' : 'KG')
+        xml.Value([((imperial ? pkg.lbs : pkg.kgs).to_f * 1000).round / 1000.0, 0.1].max)
       end
     end
 
-    def build_version_node
-      XmlNode.new('Version') do |version_node|
-        version_node << XmlNode.new('ServiceId', 'crs')
-        version_node << XmlNode.new('Major', '13')
-        version_node << XmlNode.new('Intermediate', '0')
-        version_node << XmlNode.new('Minor', '0')
-      end
-    end
-
-    def build_package_dimensions_node(pkg, imperial)
-      XmlNode.new('Dimensions') do |dimensions|
+    def build_package_dimensions_node(xml, pkg, imperial)
+      xml.Dimensions do
         [:length, :width, :height].each do |axis|
           value = ((imperial ? pkg.inches(axis) : pkg.cm(axis)).to_f * 1000).round / 1000.0 # 3 decimals
-          dimensions << XmlNode.new(axis.to_s.capitalize, value.ceil)
+          xml.public_send(axis.to_s.capitalize, value.ceil)
         end
-        dimensions << XmlNode.new('Units', imperial ? 'IN' : 'CM')
+        xml.Units(imperial ? 'IN' : 'CM')
       end
     end
 
-    def build_rate_request_types_node(type = 'ACCOUNT')
-      XmlNode.new('RateRequestTypes', type)
+    def build_rate_request_types_node(xml, type = 'ACCOUNT')
+      xml.RateRequestTypes(type)
     end
 
     def build_tracking_request(tracking_number, options = {})
-      xml_request = XmlNode.new('TrackRequest', 'xmlns' => 'http://fedex.com/ws/track/v3') do |root_node|
-        root_node << build_request_header
+      xml_builder = Nokogiri::XML::Builder.new do |xml|
+        xml.TrackRequest(xmlns: 'http://fedex.com/ws/track/v3') do
+          build_request_header(xml)
 
-        # Version
-        root_node << XmlNode.new('Version') do |version_node|
-          version_node << XmlNode.new('ServiceId', 'trck')
-          version_node << XmlNode.new('Major', '3')
-          version_node << XmlNode.new('Intermediate', '0')
-          version_node << XmlNode.new('Minor', '0')
+          # Version
+          xml.Version do
+            xml.ServiceId('trck')
+            xml.Major('3')
+            xml.Intermediate('0')
+            xml.Minor('0')
+          end
+
+          xml.PackageIdentifier do
+            xml.Value(tracking_number)
+            xml.Type(PACKAGE_IDENTIFIER_TYPES[options['package_identifier_type'] || 'tracking_number'])
+          end
+
+          xml.ShipDateRangeBegin(options['ship_date_range_begin']) if options['ship_date_range_begin']
+          xml.ShipDateRangeEnd(options['ship_date_range_end']) if options['ship_date_range_end']
+          xml.IncludeDetailedScans(1)
         end
-
-        root_node << XmlNode.new('PackageIdentifier') do |package_node|
-          package_node << XmlNode.new('Value', tracking_number)
-          package_node << XmlNode.new('Type', PACKAGE_IDENTIFIER_TYPES[options['package_identifier_type'] || 'tracking_number'])
-        end
-
-        root_node << XmlNode.new('ShipDateRangeBegin', options['ship_date_range_begin']) if options['ship_date_range_begin']
-        root_node << XmlNode.new('ShipDateRangeEnd', options['ship_date_range_end']) if options['ship_date_range_end']
-        root_node << XmlNode.new('IncludeDetailedScans', 1)
       end
-      xml_request.to_s
+      xml_builder.to_xml
     end
 
-    def build_request_header
-      web_authentication_detail = XmlNode.new('WebAuthenticationDetail') do |wad|
-        wad << XmlNode.new('UserCredential') do |uc|
-          uc << XmlNode.new('Key', @options[:key])
-          uc << XmlNode.new('Password', @options[:password])
+    def build_request_header(xml)
+      xml.WebAuthenticationDetail do
+        xml.UserCredential do
+          xml.Key(@options[:key])
+          xml.Password(@options[:password])
         end
       end
 
-      client_detail = XmlNode.new('ClientDetail') do |cd|
-        cd << XmlNode.new('AccountNumber', @options[:account])
-        cd << XmlNode.new('MeterNumber', @options[:login])
+      xml.ClientDetail do
+        xml.AccountNumber(@options[:account])
+        xml.MeterNumber(@options[:login])
       end
 
-      trasaction_detail = XmlNode.new('TransactionDetail') do |td|
-        td << XmlNode.new('CustomerTransactionId', @options[:transaction_id] || 'ActiveShipping') # TODO: Need to do something better with this..
+      xml.TransactionDetail do
+        xml.CustomerTransactionId(@options[:transaction_id] || 'ActiveShipping') # TODO: Need to do something better with this...
       end
-
-      [web_authentication_detail, client_detail, trasaction_detail]
     end
 
-    def build_location_node(name, location)
-      XmlNode.new(name) do |xml_node|
-        xml_node << XmlNode.new('Address') do |address_node|
-          address_node << XmlNode.new('StreetLines', location.address1) if location.address1
-          address_node << XmlNode.new('StreetLines', location.address2) if location.address2
-          address_node << XmlNode.new('City', location.city) if location.city
-          address_node << XmlNode.new('PostalCode', location.postal_code)
-          address_node << XmlNode.new("CountryCode", location.country_code(:alpha2))
-
-          address_node << XmlNode.new("Residential", true) unless location.commercial?
+    def build_location_node(xml, name, location)
+      xml.public_send(name) do
+        xml.Address do
+          xml.StreetLines(location.address1) if location.address1
+          xml.StreetLines(location.address2) if location.address2
+          xml.City(location.city) if location.city
+          xml.PostalCode(location.postal_code)
+          xml.CountryCode(location.country_code(:alpha2))
+          xml.Residential(true) unless location.commercial?
         end
       end
     end
