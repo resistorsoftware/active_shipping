@@ -1,20 +1,4 @@
 module ActiveShipping #:nodoc:
-  class Error < ActiveUtils::ActiveUtilsError
-  end
-
-  class ResponseError < Error
-    attr_reader :response
-
-    def initialize(response = nil)
-      if response.is_a? Response
-        super(response.message)
-        @response = response
-      else
-        super(response)
-      end
-    end
-  end
-
   class Response
     attr_reader :params
     attr_reader :message
