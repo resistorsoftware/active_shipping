@@ -277,7 +277,7 @@ class FedExTest < Minitest::Test
     assert response.delivered?
     refute response.exception?
 
-    assert_equal Time.parse('2013-12-30T05:00:00Z'), response.ship_time
+    assert_equal Date.parse('2013-12-30'), response.ship_time
     assert_equal nil, response.scheduled_delivery_date
     assert_equal Time.parse('2014-01-02T18:23:29Z'), response.actual_delivery_date
 
@@ -356,7 +356,7 @@ class FedExTest < Minitest::Test
     assert_equal :exception, response.status
     assert_equal "Unable to deliver", response.status_description
 
-    assert_equal Time.parse('2014-01-27T05:00:00Z'), response.ship_time
+    assert_equal Date.parse('2014-01-27'), response.ship_time
     assert_equal nil, response.scheduled_delivery_date
     assert_equal nil, response.actual_delivery_date
 

@@ -563,7 +563,11 @@ module ActiveShipping
 
     def extract_timestamp(document, node_name)
       if timestamp_node = document.at(node_name)
-        Time.parse(timestamp_node.text).utc
+        if timestamp_node.text =~ /\A(\d{4}-\d{2}-\d{2})T00:00:00\Z/
+          Date.parse($1)
+        else
+          Time.parse(timestamp_node.text)
+        end
       end
     end
 
