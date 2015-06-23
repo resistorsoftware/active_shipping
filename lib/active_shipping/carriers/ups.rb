@@ -383,6 +383,8 @@ module ActiveShipping
 
         if name == 'Shipper' and (origin_account = options[:origin_account] || @options[:origin_account])
           xml.ShipperNumber(origin_account)
+        elsif name =='Shipper' and (shipper_number = options[:shipper_number] || @options[:shipper_number])
+          xml.ShipperNumber(shipper_number)
         elsif name == 'ShipTo' and (destination_account = options[:destination_account] || @options[:destination_account])
           xml.ShipperAssignedIdentificationNumber(destination_account)
         end
